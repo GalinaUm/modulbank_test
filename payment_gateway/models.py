@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import OneToOneField
 
 
 class Operation(models.Model):
@@ -55,3 +56,11 @@ class OperationEvent(models.Model):
                 name='unique_event_per_operation',
             )
         ]
+
+class SubmitIntent(models.Model):
+    operation = OneToOneField(Operation, on_delete=models.CASCADE, related_name='intent')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
