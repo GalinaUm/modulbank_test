@@ -6,4 +6,5 @@ from payment_gateway import views
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('health', views.health, name='health'),
+    path('operations', views.create_operation)
 ]
