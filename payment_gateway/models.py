@@ -5,10 +5,10 @@ from django.db.models import OneToOneField
 class Operation(models.Model):
     """Модель операции"""
 
-    CREATED = "created"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    REJECTED = "rejected"
+    CREATED = "CREATED"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
 
     CHOICES = [
         (CREATED, "создано"),
@@ -19,7 +19,7 @@ class Operation(models.Model):
 
     operation_id = models.CharField(max_length=255, unique=True)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
-    currency = models.CharField(max_length=255, default='RUB')
+    currency = models.CharField(max_length=3, default='RUB')
     description = models.TextField(
         max_length=1000,
         null=True,
@@ -40,7 +40,7 @@ class Operation(models.Model):
 
 class OperationEvent(models.Model):
     """Модель события операции"""
-    operation = models.ForeignKey(Operation, on_delete=models.CASCADE, related_name='event')
+    operation = models.ForeignKey(Operation, on_delete=models.CASCADE, related_name='events')
     event_id = models.IntegerField()
     event_type = models.CharField(max_length=20)
     from_status = models.CharField(max_length=20, null=True, blank=True)
