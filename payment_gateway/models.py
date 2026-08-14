@@ -36,3 +36,22 @@ class Operation(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Payment operation'
         verbose_name_plural = 'Payment operations'
+
+class OperationEvent(models.Model):
+    """Модель события операции"""
+    operation = models.ForeignKey(Operation, on_delete=models.CASCADE, related_name='event')
+    event_id = models.IntegerField()
+    event_type = models.CharField(max_length=20)
+    from_status = models.CharField(max_length=20, null=True, blank=True)
+    to_status = models.CharField(max_length=20)
+    message = models.TextField(blank=True)
+    occurred_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ['event_id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['operation', 'event_id'],
+                name='unique_event_per_operation',
+            )
+        ]
