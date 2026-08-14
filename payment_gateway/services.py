@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from .models import Operation, OperationEvent
+from .models import Operation, OperationEvent, SubmitIntent
 
 from django.db.models import Max
 
@@ -48,3 +48,28 @@ def create_operation(operation_id, amount, currency, description):
         return None, 409, 'operation already exists'
 
     return operation, 201, None
+
+
+def operation_to_dict(operation):
+    return {
+        'operationId': operation.operation_id,
+        "amount": str(operation.amount),
+        "currency": operation.currency,
+        "description": operation.description,
+        "status": operation.status,
+        "providerPaymentId": operation.provider_payment_id,
+    }
+
+def submit_operation(operation_id):
+    try:
+        with transaction.atomic():
+            operation = Operation.objects.select_for_update().get(operation_id=operation_id)
+            if operation.status != Operation.CREATED:
+                return operation, 200
+            SubmitIntent.objects.get_or_create(operation=operation)
+            operation.status = Operation.PROCESSING
+            operation.save(update_fields=["status", "updated_at"])
+            create_event(operation, 'SUBMITTED', Operation.PROCESSING, "Submit intent persisted")
+        return operation, 202
+    except Operation.DoesNotExist:
+        return None, 404

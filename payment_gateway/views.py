@@ -3,8 +3,11 @@ import json
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-from .services import create_operation as create_operation_service
-
+from .services import (
+    create_operation as create_operation_service,
+    submit_operation as submit_operation_service,
+    operation_to_dict,
+)
 
 def health(request):
     return JsonResponse({"status": "ok"})
@@ -32,11 +35,13 @@ def create_operation(request):
     if error:
         return JsonResponse({"error": error}, status=status_code)
 
-    return JsonResponse({
-        "operationId": operation.operation_id,
-        "amount": str(operation.amount),
-        "currency": operation.currency,
-        "description": operation.description,
-        "status": operation.status,
-        "providerPaymentId": operation.provider_payment_id,
-    }, status=201)
+    return JsonResponse(operation_to_dict(operation), status=201)
+
+@csrf_exempt
+def submit_operation(request, operation_id):
+    if request.method != "POST":
+        return JsonResponse({"error": "method not allowed"}, status=405)
+    operation, status_code = submit_operation_service(operation_id)
+    if operation is None:
+        return JsonResponse({"error": "operation not found"}, status=404)
+    return JsonResponse(operation_to_dict(operation), status=status_code)
