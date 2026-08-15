@@ -10,4 +10,5 @@ urlpatterns = [
     path('operations/<str:operation_id>/submit', views.submit_operation),
     path('operations/<str:operation_id>', views.get_operation),
     path('operations/<str:operation_id>/events', views.get_operation_events),
+    path('receipts', views.receipt),
 ]

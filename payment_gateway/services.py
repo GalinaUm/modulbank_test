@@ -106,6 +106,7 @@ def get_operation(operation_id):
     except Operation.DoesNotExist:
         return None, 404, "Operation does not exist"
 
+
 def operation_events_to_dict(events):
     return [{
         'eventId': e.event_id,
@@ -115,3 +116,39 @@ def operation_events_to_dict(events):
         'message': e.message,
         'occurredAt': e.occurred_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
     }  for e in events]
+
+
+def handle_receipt(operation_id, provider_payment_id, result, message):
+    try:
+        with transaction.atomic():
+            operation = Operation.objects.select_for_update().get(operation_id=operation_id)
+
+            if result not in (Operation.COMPLETED, Operation.REJECTED):
+                return None, 400, "invalid result"
+
+            if operation.status in (Operation.COMPLETED, Operation.REJECTED):
+                if operation.provider_payment_id != provider_payment_id:
+                    return None, 409, "providerPaymentId mismatch"
+                if operation.status == result:
+                    return operation, 204, None
+                create_event(
+                    operation,
+                    "IGNORED",
+                    operation.status,
+                    f"Ignored conflicting receipt: {result}"
+                )
+                return operation, 204, None
+
+            if (operation.provider_payment_id is not None
+                and operation.provider_payment_id != provider_payment_id):
+                return None, 409, "providerPaymentId mismatch"
+
+            if operation.provider_payment_id is None:
+                operation.provider_payment_id = provider_payment_id
+
+            operation.status = result
+            operation.save(update_fields=['status', 'provider_payment_id', 'updated_at'])
+            create_event(operation, result, result, message or f"Payment {result}")
+            return operation, 204, None
+    except Operation.DoesNotExist:
+        return None, 404, "Operation does not exist"
