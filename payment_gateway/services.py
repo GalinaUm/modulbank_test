@@ -1,3 +1,4 @@
+import threading
 from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
@@ -64,8 +65,10 @@ def operation_to_dict(operation):
 
 
 def _on_submit_committed(operation):
-    from .provider_client import send_payment
-    send_payment(operation)
+    def worker():
+        from .provider_client import send_payment
+        send_payment(operation)
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def submit_operation(operation_id):
