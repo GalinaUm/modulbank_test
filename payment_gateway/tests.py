@@ -379,3 +379,27 @@ class ProviderClientTests(TestCase):
         self.operation.refresh_from_db()
         self.assertIsNone(self.operation.provider_payment_id)
         self.assertEqual(self.operation.status, Operation.CREATED)
+
+
+class MetricsTests(TestCase):
+    def test_metrics_returns_shape_and_database_counts(self):
+        Operation.objects.create(
+            operation_id='m-1', amount=Decimal('1.00'), currency='RUB', status=Operation.PROCESSING
+        )
+        Operation.objects.create(
+            operation_id='m-2', amount=Decimal('2.00'), currency='RUB',
+            status=Operation.COMPLETED, provider_payment_id='pid-m',
+        )
+        Operation.objects.create(
+            operation_id='m-3', amount=Decimal('3.00'), currency='RUB', status=Operation.REJECTED
+        )
+
+        response = self.client.get('/metrics')
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        for key in ('operationsProcessing', 'operationsCompleted', 'operationsRejected',
+                    'retries', 'paymentsAccepted'):
+            self.assertIn(key, payload)
+        self.assertEqual(payload['operationsProcessing'], 1)
+        self.assertEqual(payload['operationsCompleted'], 1)
+        self.assertEqual(payload['operationsRejected'], 1)

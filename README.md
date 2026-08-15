@@ -47,6 +47,16 @@ curl http://localhost:8080/operations/op-1/events
 Ожидание: `status: COMPLETED`, `providerPaymentId` заполнен,
 в истории события `CREATED`, `SUBMITTED`, `COMPLETED`.
 
+## Метрики
+
+```
+curl http://localhost:8080/metrics
+```
+
+Возвращает текущее число операций по статусам (`PROCESSING`, `COMPLETED`,
+`REJECTED`) и счётчики процесса: число ретраев к провайдеру и число принятых
+платежей с момента старта сервиса.
+
 ## Проверка восстановления после перезапуска
 
 ```
@@ -62,9 +72,9 @@ docker compose restart candidate-service
 docker compose run --rm candidate-service python manage.py test payment_gateway
 ```
 
-33 теста: контракт API, валидация, конкурентный submit (ровно один намерение),
+34 теста: контракт API, валидация, конкурентный submit (ровно одно намерение),
 идемпотентные и конфликтующие квитанции, восстановление, клиент провайдера
-(заголовки, backoff, поведение при сетевых сбоях).
+(заголовки, backoff, поведение при сетевых сбоях), метрики.
 
 ## Структура
 

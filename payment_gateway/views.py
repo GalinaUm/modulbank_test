@@ -10,10 +10,15 @@ from .services import (
     handle_receipt as handle_receipt_service,
     operation_to_dict,
     operation_events_to_dict,
+    get_metrics as get_metrics_service,
 )
 
 def health(request):
     return JsonResponse({"status": "ok"})
+
+
+def metrics(request):
+    return JsonResponse(get_metrics_service())
 
 
 @csrf_exempt

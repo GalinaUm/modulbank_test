@@ -121,6 +121,19 @@ def operation_events_to_dict(events):
     }  for e in events]
 
 
+def get_metrics():
+    from .provider_client import get_provider_counters
+
+    counters = get_provider_counters()
+    return {
+        'operationsProcessing': Operation.objects.filter(status=Operation.PROCESSING).count(),
+        'operationsCompleted': Operation.objects.filter(status=Operation.COMPLETED).count(),
+        'operationsRejected': Operation.objects.filter(status=Operation.REJECTED).count(),
+        'retries': counters['retries'],
+        'paymentsAccepted': counters['accepted'],
+    }
+
+
 def handle_receipt(operation_id, provider_payment_id, result, message):
     try:
         with transaction.atomic():
