@@ -1,10 +1,15 @@
 import json
 import threading
-from unittest.mock import patch
+from decimal import Decimal
+from unittest.mock import Mock, patch
 
+from django.apps import apps
+from django.db import close_old_connections
 from django.test import TestCase, TransactionTestCase
 
+from payment_gateway import provider_client
 from .models import Operation, OperationEvent, SubmitIntent
+from .provider_client import send_payment
 
 
 def post_json(client, path, payload):
@@ -141,8 +146,11 @@ class ConcurrentSubmitTests(TransactionTestCase):
 
         def submit():
             barrier.wait()
-            resp = self.client.post('/operations/race-1/submit')
-            results.append(resp.status_code)
+            try:
+                resp = self.client.post('/operations/race-1/submit')
+                results.append(resp.status_code)
+            finally:
+                close_old_connections()
 
         threads = [threading.Thread(target=submit) for _ in range(5)]
         for t in threads:
@@ -155,3 +163,219 @@ class ConcurrentSubmitTests(TransactionTestCase):
         self.assertEqual(operation.status, Operation.PROCESSING)
         self.assertEqual(SubmitIntent.objects.filter(operation=operation).count(), 1)
         self.assertEqual(self.mock_send_payment.call_count, 1)
+
+
+class GetOperationTests(TestCase):
+    def setUp(self):
+        post_json(self.client, '/operations', {
+            'operationId': 'get-1',
+            'amount': '5.00',
+            'currency': 'RUB',
+        })
+
+    def test_get_operation_returns_state(self):
+        resp = self.client.get('/operations/get-1')
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body['operationId'], 'get-1')
+        self.assertEqual(body['status'], 'CREATED')
+        self.assertEqual(body['amount'], '5.00')
+
+    def test_get_events_format(self):
+        resp = self.client.get('/operations/get-1/events')
+        self.assertEqual(resp.status_code, 200)
+        events = resp.json()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['eventId'], 1)
+        self.assertEqual(events[0]['type'], 'CREATED')
+        self.assertIsNone(events[0]['fromStatus'])
+        self.assertEqual(events[0]['toStatus'], 'CREATED')
+        self.assertTrue(events[0]['occurredAt'].endswith('Z'))
+
+    def test_get_missing_operation_returns_404(self):
+        self.assertEqual(self.client.get('/operations/nope').status_code, 404)
+        self.assertEqual(self.client.get('/operations/nope/events').status_code, 404)
+
+
+class ReceiptTests(TransactionTestCase):
+    def setUp(self):
+        self.send_payment_patch = patch('payment_gateway.provider_client.send_payment', return_value=True)
+        self.mock_send_payment = self.send_payment_patch.start()
+        self.addCleanup(self.send_payment_patch.stop)
+        post_json(self.client, '/operations', {
+            'operationId': 'rec-1',
+            'amount': '77.00',
+            'currency': 'RUB',
+        })
+        self.client.post('/operations/rec-1/submit')
+
+    def receipt(self, provider_payment_id='pid-1', result='COMPLETED', message='done'):
+        return post_json(self.client, '/receipts', {
+            'operationId': 'rec-1',
+            'providerPaymentId': provider_payment_id,
+            'result': result,
+            'message': message,
+            'occurredAt': '2026-08-15T12:00:00Z',
+        })
+
+    def test_receipt_transitions_to_final_status(self):
+        resp = self.receipt()
+        self.assertEqual(resp.status_code, 204)
+        operation = Operation.objects.get(operation_id='rec-1')
+        self.assertEqual(operation.status, Operation.COMPLETED)
+        self.assertEqual(operation.provider_payment_id, 'pid-1')
+
+    def test_receipt_before_provider_response_sets_provider_payment_id(self):
+        self.receipt(provider_payment_id='early-pid')
+        operation = Operation.objects.get(operation_id='rec-1')
+        self.assertEqual(operation.status, Operation.COMPLETED)
+        self.assertEqual(operation.provider_payment_id, 'early-pid')
+
+    def test_duplicate_receipt_does_not_create_new_event(self):
+        self.receipt()
+        before = OperationEvent.objects.filter(operation__operation_id='rec-1').count()
+        resp = self.receipt()
+        after = OperationEvent.objects.filter(operation__operation_id='rec-1').count()
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(after, before)
+
+    def test_late_conflicting_receipt_is_ignored(self):
+        self.receipt(result='COMPLETED')
+        resp = self.receipt(result='REJECTED')
+        self.assertEqual(resp.status_code, 204)
+        operation = Operation.objects.get(operation_id='rec-1')
+        self.assertEqual(operation.status, Operation.COMPLETED)
+        self.assertEqual(
+            OperationEvent.objects.filter(
+                operation__operation_id='rec-1', event_type='IGNORED').count(),
+            1,
+        )
+
+    def test_mismatched_provider_payment_id_returns_409(self):
+        self.receipt()
+        resp = self.receipt(provider_payment_id='other-pid')
+        self.assertEqual(resp.status_code, 409)
+
+    def test_invalid_result_returns_400(self):
+        resp = self.receipt(result='NEVER')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_unknown_operation_returns_404(self):
+        resp = post_json(self.client, '/receipts', {
+            'operationId': 'nope',
+            'providerPaymentId': 'pid-1',
+            'result': 'COMPLETED',
+        })
+        self.assertEqual(resp.status_code, 404)
+
+    def test_missing_fields_returns_400(self):
+        resp = post_json(self.client, '/receipts', {
+            'operationId': 'rec-1',
+            'providerPaymentId': 'pid-1',
+        })
+        self.assertEqual(resp.status_code, 400)
+
+    def test_completed_and_rejected_pass(self):
+        self.receipt(result='REJECTED')
+        operation = Operation.objects.get(operation_id='rec-1')
+        self.assertEqual(operation.status, Operation.REJECTED)
+
+
+class RecoveryTests(TransactionTestCase):
+    def setUp(self):
+        self.send_payment_patch = patch('payment_gateway.provider_client.send_payment', return_value=True)
+        self.mock_send_payment = self.send_payment_patch.start()
+        self.addCleanup(self.send_payment_patch.stop)
+        self.config = apps.get_app_config('payment_gateway')
+
+    def test_resumes_processing_operations(self):
+        post_json(self.client, '/operations', {
+            'operationId': 'recover-1',
+            'amount': '50.00',
+            'currency': 'RUB',
+        })
+        Operation.objects.create(
+            operation_id='recover-2',
+            amount=Decimal('33.00'),
+            currency='RUB',
+            status=Operation.PROCESSING,
+        )
+        op1 = Operation.objects.get(operation_id='recover-1')
+        op1.status = Operation.PROCESSING
+        op1.save(update_fields=['status'])
+        SubmitIntent.objects.create(operation=op1)
+
+        self.config._resume_pending()
+
+        self.assertEqual(self.mock_send_payment.call_count, 2)
+        for call in self.mock_send_payment.call_args_list:
+            self.assertIn(call.args[0].operation_id, ('recover-1', 'recover-2'))
+
+    def test_resume_skips_when_nothing_pending(self):
+        self.config._resume_pending()
+        self.mock_send_payment.assert_not_called()
+
+
+class ProviderClientTests(TestCase):
+    def setUp(self):
+        self.operation = Operation.objects.create(
+            operation_id='pc-1',
+            amount=Decimal('10.00'),
+            currency='RUB',
+        )
+        self.sleep_patch = patch('payment_gateway.provider_client.time.sleep')
+        self.sleep_patch.start()
+        self.addCleanup(self.sleep_patch.stop)
+        self.max_retries_patch = patch.object(provider_client, 'MAX_RETRIES', 3)
+        self.max_retries_patch.start()
+        self.addCleanup(self.max_retries_patch.stop)
+        self.post_patch = patch('payment_gateway.provider_client.requests.post')
+        self.mock_post = self.post_patch.start()
+        self.addCleanup(self.post_patch.stop)
+
+    def ok_response(self, provider_payment_id='pid-1'):
+        response = Mock(status_code=202)
+        response.json.return_value = {'providerPaymentId': provider_payment_id, 'status': 'ACCEPTED'}
+        return response
+
+    def test_sends_expected_headers_and_body(self):
+        self.mock_post.return_value = self.ok_response()
+        self.assertTrue(send_payment(self.operation))
+        _, kwargs = self.mock_post.call_args
+        self.assertEqual(kwargs['headers']['Idempotency-Key'], 'pc-1')
+        self.assertEqual(kwargs['headers']['X-Correlation-ID'], 'pc-1')
+        self.assertEqual(kwargs['json']['operationId'], 'pc-1')
+        self.assertEqual(kwargs['json']['amount'], '10.00')
+        self.assertEqual(kwargs['json']['currency'], 'RUB')
+        self.assertEqual(kwargs['timeout'], 10)
+        self.operation.refresh_from_db()
+        self.assertEqual(self.operation.provider_payment_id, 'pid-1')
+
+    def test_retries_on_503_with_same_idempotency_key(self):
+        self.mock_post.side_effect = [
+            Mock(status_code=503),
+            Mock(status_code=503),
+            self.ok_response('pid-2'),
+        ]
+        self.assertTrue(send_payment(self.operation))
+        self.assertEqual(self.mock_post.call_count, 3)
+        for call in self.mock_post.call_args_list:
+            self.assertEqual(call.kwargs['headers']['Idempotency-Key'], 'pc-1')
+
+    def test_retries_on_network_error(self):
+        self.mock_post.side_effect = [
+            provider_client.requests.ConnectionError('boom'),
+            self.ok_response('pid-3'),
+        ]
+        self.assertTrue(send_payment(self.operation))
+        self.assertEqual(self.mock_post.call_count, 2)
+        self.operation.refresh_from_db()
+        self.assertEqual(self.operation.provider_payment_id, 'pid-3')
+
+    def test_exhausted_retries_keep_status_unchanged(self):
+        self.mock_post.side_effect = provider_client.requests.ConnectionError('boom')
+        self.assertFalse(send_payment(self.operation))
+        self.assertEqual(self.mock_post.call_count, 3)
+        self.operation.refresh_from_db()
+        self.assertIsNone(self.operation.provider_payment_id)
+        self.assertEqual(self.operation.status, Operation.CREATED)

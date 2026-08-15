@@ -32,7 +32,18 @@ class PaymentGatewayConfig(AppConfig):
         else:
             return
 
-        for operation in Operation.objects.filter(status=Operation.PROCESSING):
+        pending = []
+        for _ in range(50):
+            try:
+                pending = list(Operation.objects.filter(status=Operation.PROCESSING))
+                break
+            except Exception:
+                pending = None
+                time.sleep(0.5)
+        if not pending:
+            return
+
+        for operation in pending:
             logger.info("resuming payment for %s", operation.operation_id)
             try:
                 self._send(operation)
