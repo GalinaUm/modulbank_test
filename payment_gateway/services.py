@@ -11,7 +11,8 @@ from django.db.models import Max
 def create_event(operation, event_type, to_status, message, from_status=None):
     max_id = (OperationEvent.objects
               .filter(operation=operation)
-              .aggregate(max_event=Max('event_id'))['max_event'] or 0)
+              .aggregate(max_event=Max('event_id'))
+              .get('max_event') or 0)
     return OperationEvent.objects.create(
         operation=operation,
         event_id=max_id + 1,
