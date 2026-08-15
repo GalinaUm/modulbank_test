@@ -23,6 +23,7 @@ def create_event(operation, event_type, to_status, message, from_status=None):
         occurred_at=timezone.now(),
     )
 
+
 def create_operation(operation_id, amount, currency, description):
     try:
         amount = Decimal(amount)
@@ -61,6 +62,12 @@ def operation_to_dict(operation):
         "providerPaymentId": operation.provider_payment_id,
     }
 
+
+def _on_submit_committed(operation):
+    from .provider_client import send_payment
+    send_payment(operation)
+
+
 def submit_operation(operation_id):
     try:
         with transaction.atomic():
@@ -70,7 +77,41 @@ def submit_operation(operation_id):
             SubmitIntent.objects.get_or_create(operation=operation)
             operation.status = Operation.PROCESSING
             operation.save(update_fields=["status", "updated_at"])
-            create_event(operation, 'SUBMITTED', Operation.PROCESSING, "Submit intent persisted")
+            create_event(
+                operation,
+                'SUBMITTED',
+                Operation.PROCESSING,
+                "Submit intent persisted",
+                from_status=Operation.CREATED
+            )
+            transaction.on_commit(lambda: _on_submit_committed(operation))
         return operation, 202
     except Operation.DoesNotExist:
         return None, 404
+
+
+def save_provider_payment_id(operation, provider_payment_id):
+    with transaction.atomic():
+        current = Operation.objects.select_for_update().get(operation_id=operation.operation_id)
+        if current.provider_payment_id is None:
+            current.provider_payment_id = provider_payment_id
+            current.save(update_fields=["provider_payment_id", "updated_at"])
+    return current
+
+
+def get_operation(operation_id):
+    try:
+        operation = Operation.objects.get(operation_id=operation_id)
+        return operation, 200, None
+    except Operation.DoesNotExist:
+        return None, 404, "Operation does not exist"
+
+def operation_events_to_dict(events):
+    return [{
+        'eventId': e.event_id,
+        'type': e.event_type,
+        'fromStatus': e.from_status,
+        'toStatus': e.to_status,
+        'message': e.message,
+        'occurredAt': e.occurred_at.strftime('%Y-%m-%dT%H:%M:%SZ'),
+    }  for e in events]
