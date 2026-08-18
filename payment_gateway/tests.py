@@ -245,10 +245,15 @@ class ReceiptTests(TransactionTestCase):
         self.assertEqual(resp.status_code, 204)
         operation = Operation.objects.get(operation_id='rec-1')
         self.assertEqual(operation.status, Operation.COMPLETED)
+        ignored = OperationEvent.objects.get(
+            operation__operation_id='rec-1', event_type='IGNORED')
+        self.assertEqual(ignored.from_status, Operation.COMPLETED)
+        self.assertEqual(ignored.to_status, Operation.COMPLETED)
         self.assertEqual(
             OperationEvent.objects.filter(
-                operation__operation_id='rec-1', event_type='IGNORED').count(),
-            1,
+                operation__operation_id='rec-1',
+                to_status=Operation.COMPLETED).count(),
+            2,
         )
 
     def test_mismatched_provider_payment_id_returns_409(self):

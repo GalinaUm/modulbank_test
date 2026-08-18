@@ -151,7 +151,8 @@ def handle_receipt(operation_id, provider_payment_id, result, message):
                     operation,
                     "IGNORED",
                     operation.status,
-                    f"Ignored conflicting receipt: {result}"
+                    f"Ignored conflicting receipt: {result}",
+                    from_status=operation.status,
                 )
                 return operation, 204, None
 
